@@ -20,7 +20,10 @@ parser.add_argument('--count_dups', help='count multiple instances in same messa
 parser.add_argument('--match_exactly', help='the message must match the phrase exactly', 
 	action="store_true", default=False)
 parser.add_argument('--print_user', help='print all matches by this user')
-
+parser.add_argument('--likes', help='Find likes for each user instead of messages',
+	action="store_true", default=False)
+parser.add_argument('--messages', help='run stats on individual messages rather than individual users',
+	action="store_true", default=False)
 
 # Arguments for showStats
 parser.add_argument('--include_groupme', help='include messages sent by GroupMe', 
@@ -67,6 +70,8 @@ def getOccurances(phrase, count_dups=False, print_matches=False, match_exactly=F
 			else:
 				return count
 	return getNum
+	
+		
 
 def numWords(user, text):
 	return len(text.split())
@@ -75,7 +80,7 @@ def numChars(user, text):
 	return len(text)
 
 """ Reads the CSV file and passes the content to process_msg_func """
-def readCsv(fname, process_msg_func=None):
+def readCsvUser(fname, process_msg_func=None, add_likes=False):
 	f = open(fname, 'rU')
 	reader = csv.reader(f)
 	count = 0
@@ -87,25 +92,64 @@ def readCsv(fname, process_msg_func=None):
 		timestamp = row[1]
 		user = row[2]
 		text = row[3]
+		likes = row[4]
+		print likes
 		if user not in d:
 			d[user] = []
-		if process_msg_func is None:
+		if add_likes:
+			if isStringInteger(likes):
+				d[user].append(int(likes))
+			else:
+				raise ValueError('row ' + row + ' contains invalid information for likes (column 5)\n')
+		elif process_msg_func is None:
 			d[user].append(1)
 		else:
 			data = process_msg_func(user, text)
 			d[user].append(data)
 	return d
 
+""" Reads the CSV file for messages (rather than users)"""
+def readCsvMessage(fname):
+	f = open(fname, 'rU')
+	reader = csv.reader(f)
+	count = 0
+	d = {}
+	for row in reader:
+		if len(row) < 3:
+			raiseIOError("CSV file missing columns.")
+		# Only grab text and likes, because these are the only two things that we are interested in
+		user = row[2]
+		text = row[3]
+		likes = row[4]
+		key = user + ': ' + text
+		if isStringInteger(likes):
+			d[key] = int(likes)
+		else:
+			raise ValueError('row ' + row + ' contains invalid information for likes (column 5)\n')
+	return d
+
+"""Helper function to check if an string represents in integer"""
+def isStringInteger(s):
+	try:
+		int(s)
+		return True
+	except ValueError:
+		return False
+
 """ Helper function that calls readCsv and getStats """
-def showStats(fname, func=None, **kwargs):
-	result = readCsv(fname, func)
+def showStats(fname, func=None, add_likes=False, user=True,**kwargs):
+	if user:
+		result = readCsvUser(fname, func, add_likes)
+	else:
+		result = readCsvMessage(fname)
 	return getStats(result, **kwargs)
+
 
 """ 
 Given the return value of readCsv, display useful stats 
 
 Params:
-data - dictionary where the key is the user's name and the value is a list that contains an
+data - dictionary where the key is the user/phrase's name/value and the value is a list that contains an
 		integer for each message by the user (typically representing the # of phrases matched)
 include_groupme - include messages sent by GroupMe
 total - sum the list of integers rather than take the average. If we're counting phrase 
@@ -115,25 +159,29 @@ compact - don't return the total num of messages and percentage
 """
 def getStats(data, include_groupme=False, total=True, percent=True, compact=True):
 	l = []
-	num_people = total_msgs = total_data_per_person = total_data = 0
+	num_items = total_msgs = total_data_per_item = total_data = 0
 	for k,v in data.iteritems():
 		if not include_groupme and str(k) == 'GroupMe':
 			continue
-		num_people += 1
-		num_msgs = len(v)
+		num_items += 1
+		if type(v) == list:
+			num_msgs = len(v)
+			total_data_per_item = sum(v)
+		else:
+			num_msgs = max(v, 1)
+			total_data_per_item = v
 		total_msgs += num_msgs
-		total_data_per_person = sum(v)
-		total_data += total_data_per_person
+		total_data += total_data_per_item
 		if total:
 			if percent:
-				l.append((str(k), num_msgs, total_data_per_person, 
-					str(round(total_data_per_person * 100.0 / num_msgs, 1))+'%'))
+				l.append((str(k), num_msgs, total_data_per_item, 
+					str(round(total_data_per_item * 100.0 / num_msgs, 1))+'%'))
 			else:
-				l.append((str(k), num_msgs, total_data_per_person))
+				l.append((str(k), num_msgs, total_data_per_item))
 		else:
 			avg_data_len = 0
 			if num_msgs != 0:
-				avg_data_len = round(sum(v)*1.0 / num_msgs, 1)
+				avg_data_len = round(total_data_per_item*1.0 / num_msgs, 1)
 			l.append((str(k), num_msgs, avg_data_len))
 	l = sorted(l, key=lambda k:k[2], reverse=True)
 #	if total:
@@ -151,14 +199,16 @@ if __name__ == "__main__":
 	args = parser.parse_args()
 	csv_file = args.csv_file
 	if args.phrase:
-		result = readCsv(csv_file, getOccurances(
+		result = readCsvUser(csv_file, getOccurances(
 								  args.phrase, 
 								  print_matches=args.print_matches,
 								  count_dups=args.count_dups,
 								  match_exactly=args.match_exactly,
-								  print_user=args.print_user)
+								  print_user=args.print_user),
+								  add_likes = False
 						)
 		print getStats(result,
+					   add_likes = args.likes,
 					   include_groupme=args.include_groupme,
 					   total=(not args.average), 
 					   compact=(not args.no_compact)
@@ -166,6 +216,8 @@ if __name__ == "__main__":
 	else:
 		print showStats(csv_file,
 						None,
+						add_likes = args.likes,
+						user = (not args.messages),
 						include_groupme=args.include_groupme,
 					   	total=(not args.average), 
 					   	compact=(not args.no_compact)
